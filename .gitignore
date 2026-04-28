@@ -1,0 +1,70 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+
+# Ignore all data by default
+data/
+
+# Re-allow directories so we can whitelist subtrees
+!data/**/
+
+# Keep placeholders (so folder structure is committed)
+!.gitkeep
+!data/**/.gitkeep
+!data/**/README.md
+
+# Never commit raw datasets
+data/raw/**
+
+# ...except the placeholder
+!data/raw/.gitkeep
+!data/raw/README.md
+
+# Allow committing processed outputs
+!data/processed/**
+!data/processed/**/*.csv
+!data/processed/**/*.parquet
+!data/processed/**/*.json
+!data/processed/**/*.feather
+!data/processed/**/*.pkl
