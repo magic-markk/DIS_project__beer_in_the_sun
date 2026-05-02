@@ -1,4 +1,4 @@
-# DIS_project__beer_in_the_sun
+# DIS Project - ErDerSol.dk
 DIS Group Project
 
 README skal indeholde følgende dokumentation:
