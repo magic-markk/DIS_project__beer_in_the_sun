@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import re
+import time
 import xml.etree.ElementTree as ET
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -70,7 +71,11 @@ OUTPUT_COLUMNS = [
     "sun_status",
     "in_shadow",
     "shadow_reason",
+    "building_count_fetched",
     "building_count_used",
+    "building_cache_hit",
+    "nearest_building_distance_m",
+    "farthest_used_building_distance_m",
     "sun_elevation_deg",
     "sun_azimuth_deg",
     "blocking_building_id",
@@ -475,38 +480,170 @@ def add_shadow_to_places(
     places: list[dict],
     radius_m: int,
     point_mode: str,
+    max_buildings: int,
+    max_building_distance_m: float,
+    cache_grid_m: float,
+    request_delay_s: float,
 ) -> list[dict]:
     enriched = []
+    buildings_cache = {}
 
     for place in places:
         result = dict(place)
 
         try:
-            buildings = fetch_buildings_osm(place["lat"], place["lon"], radius_m=radius_m)
+            buildings, cache_hit = fetch_cached_buildings(
+                place["lat"],
+                place["lon"],
+                radius_m=radius_m,
+                cache_grid_m=cache_grid_m,
+                request_delay_s=request_delay_s,
+                cache=buildings_cache,
+            )
             shadow_lat, shadow_lon, point_source = shadow_test_point(
                 place["lat"],
                 place["lon"],
                 buildings,
                 point_mode,
             )
-            shadow = point_in_building_shadow(shadow_lat, shadow_lon, buildings)
+            nearby_buildings = nearest_buildings(
+                shadow_lat,
+                shadow_lon,
+                buildings,
+                max_count=max_buildings,
+                max_distance_m=max_building_distance_m,
+            )
+            shadow = point_in_building_shadow(shadow_lat, shadow_lon, nearby_buildings)
             result["shadow"] = shadow
             result["shadow_test_lat"] = shadow_lat
             result["shadow_test_lon"] = shadow_lon
             result["shadow_test_point_source"] = point_source
-            result["building_count_used"] = len(buildings)
+            result["building_count_fetched"] = len(buildings)
+            result["building_count_used"] = len(nearby_buildings)
+            result["building_cache_hit"] = cache_hit
+            result["nearest_building_distance_m"] = building_distance_value(nearby_buildings, 0)
+            result["farthest_used_building_distance_m"] = building_distance_value(nearby_buildings, -1)
             result["shadow_error"] = None
         except Exception as exc:
             result["shadow"] = {}
             result["shadow_test_lat"] = None
             result["shadow_test_lon"] = None
             result["shadow_test_point_source"] = None
+            result["building_count_fetched"] = None
             result["building_count_used"] = None
+            result["building_cache_hit"] = None
+            result["nearest_building_distance_m"] = None
+            result["farthest_used_building_distance_m"] = None
             result["shadow_error"] = str(exc)
 
         enriched.append(result)
 
     return enriched
+
+
+def fetch_cached_buildings(
+    lat: float,
+    lon: float,
+    radius_m: int,
+    cache_grid_m: float,
+    request_delay_s: float,
+    cache: dict,
+) -> tuple[list[dict], bool]:
+    key = building_cache_key(lat, lon, radius_m, cache_grid_m)
+
+    if key in cache:
+        return cache[key], True
+
+    fetch_radius_m = radius_m
+    if cache_grid_m > 0:
+        fetch_radius_m = int(math.ceil(radius_m + cache_grid_m))
+
+    if request_delay_s > 0 and cache:
+        time.sleep(request_delay_s)
+
+    buildings = fetch_buildings_osm(lat, lon, radius_m=fetch_radius_m)
+    cache[key] = buildings
+    return buildings, False
+
+
+def building_cache_key(
+    lat: float,
+    lon: float,
+    radius_m: int,
+    cache_grid_m: float,
+) -> tuple:
+    if cache_grid_m <= 0:
+        return (round(lat, 7), round(lon, 7), radius_m)
+
+    lat_step = cache_grid_m / 111_320.0
+    lon_step = cache_grid_m / (111_320.0 * abs(math.cos(math.radians(lat))))
+
+    return (
+        round(lat / lat_step),
+        round(lon / lon_step),
+        radius_m,
+        round(cache_grid_m),
+    )
+
+
+def nearest_buildings(
+    lat: float,
+    lon: float,
+    buildings: list[dict],
+    max_count: int,
+    max_distance_m: float,
+) -> list[dict]:
+    buildings_with_distance = []
+
+    for building in buildings:
+        distance_m = distance_to_building_m(lat, lon, building)
+
+        if distance_m is None:
+            continue
+
+        if max_distance_m > 0 and distance_m > max_distance_m:
+            continue
+
+        building_copy = dict(building)
+        building_copy["_distance_to_shadow_point_m"] = round(distance_m, 1)
+        buildings_with_distance.append(building_copy)
+
+    buildings_with_distance.sort(key=lambda item: item["_distance_to_shadow_point_m"])
+
+    if max_count > 0:
+        return buildings_with_distance[:max_count]
+
+    return buildings_with_distance
+
+
+def distance_to_building_m(lat: float, lon: float, building: dict) -> float | None:
+    polygon_coords = building.get("polygon", [])
+
+    if len(polygon_coords) < 3:
+        return None
+
+    poly = Polygon(polygon_coords)
+
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+
+    if poly.is_empty:
+        return None
+
+    target = Point(lon, lat)
+
+    if poly.covers(target):
+        return 0.0
+
+    nearest = poly.exterior.interpolate(poly.exterior.project(target))
+    return haversine_m(lat, lon, nearest.y, nearest.x)
+
+
+def building_distance_value(buildings: list[dict], index: int) -> float | None:
+    if not buildings:
+        return None
+
+    return buildings[index].get("_distance_to_shadow_point_m")
 
 
 def add_scores_to_places(places: list[dict], search_radius_m: float) -> list[dict]:
@@ -641,7 +778,11 @@ def flatten_place(place: dict) -> dict:
         "sun_status": sun_status_from_shadow(in_shadow),
         "in_shadow": in_shadow,
         "shadow_reason": shadow.get("reason"),
+        "building_count_fetched": place.get("building_count_fetched"),
         "building_count_used": place.get("building_count_used"),
+        "building_cache_hit": place.get("building_cache_hit"),
+        "nearest_building_distance_m": place.get("nearest_building_distance_m"),
+        "farthest_used_building_distance_m": place.get("farthest_used_building_distance_m"),
         "sun_elevation_deg": sun.get("sun_elevation_deg"),
         "sun_azimuth_deg": sun.get("sun_azimuth_deg"),
         "blocking_building_id": blocking_building.get("id"),
@@ -720,7 +861,8 @@ def print_results(places: list[dict]) -> None:
                 f"{sun_status_from_shadow(shadow.get('in_shadow'))}, "
                 f"reason={shadow.get('reason')}, "
                 f"sun elevation={round(sun.get('sun_elevation_deg'), 1) if sun.get('sun_elevation_deg') is not None else '-'} deg, "
-                f"buildings checked={place.get('building_count_used')}"
+                f"buildings checked={place.get('building_count_used')}/{place.get('building_count_fetched')}, "
+                f"cache_hit={place.get('building_cache_hit')}"
             )
 
 
@@ -824,6 +966,33 @@ def parse_args() -> argparse.Namespace:
         help="Radius i meter til bygninger der bruges i skyggeberegningen.",
     )
     parser.add_argument(
+        "--shadow-max-buildings",
+        type=int,
+        default=25,
+        help="Maks antal naermeste bygninger der sendes til skyggeberegningen. Brug 0 for alle.",
+    )
+    parser.add_argument(
+        "--shadow-max-building-distance-m",
+        type=float,
+        default=80,
+        help="Maks afstand fra skygge-testpunkt til bygning. Brug 0 for ingen afstandsgrænse.",
+    )
+    parser.add_argument(
+        "--shadow-cache-grid-m",
+        type=float,
+        default=75,
+        help=(
+            "Genbrug bygningsdata for barer i samme ca. gridcelle. "
+            "Saet 0 for at slaa cache fra."
+        ),
+    )
+    parser.add_argument(
+        "--shadow-request-delay-s",
+        type=float,
+        default=1.0,
+        help="Pause mellem nye Overpass-kald til bygninger. Cache hits venter ikke.",
+    )
+    parser.add_argument(
         "--skip-shadow",
         action="store_true",
         help="Spring skyggeberegningen over. Godt til hurtig test.",
@@ -882,6 +1051,10 @@ def main() -> None:
             enriched,
             radius_m=args.shadow_radius_m,
             point_mode=args.shadow_point_mode,
+            max_buildings=args.shadow_max_buildings,
+            max_building_distance_m=args.shadow_max_building_distance_m,
+            cache_grid_m=args.shadow_cache_grid_m,
+            request_delay_s=args.shadow_request_delay_s,
         )
 
     enriched = add_scores_to_places(enriched, search_radius_m=args.radius_m)
