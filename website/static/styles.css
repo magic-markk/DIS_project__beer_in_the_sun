@@ -42,23 +42,20 @@ body {
 .sidebar {
     background: linear-gradient(295deg, #a35904 -50%, #f28e1c);
     color: white;
-    padding: 1rem;
     min-height: 100vh;
 }
+/* .sidebar * {
+    padding: 10px;
+} */
 .sidebar ul li {
     font-weight: 500;
 }
 .sidebar li a {
     color: rgba(255, 255, 255, 0.883);
     display: block;
-    padding: 14px;
+    padding: 10px;
 }
-.sidebar button {
-    margin: 0;
-    display: block;
-    padding: 14px;
-    font-weight: 500;
-}
+
 .sidebar ul li:hover{
     background: #ed932c;
     transition: all 0.15s ease;
