@@ -10,9 +10,14 @@
     {% block extra_head %}{% endblock %}
 </head>
 <body>
-    {% include 'components/navbar.html' %}
-
-    {% block content %}{% endblock %}
+    <section class="wrapper">
+        <div class="flex-container">
+            <div>
+                {% include 'components/navbar.html' %}
+            </div>
+            {% block content %}{% endblock %}
+        </div>
+    </section>
 
     {% include 'components/footer.html' %}
 </body>
